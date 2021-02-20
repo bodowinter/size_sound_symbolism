@@ -1,0 +1,1466 @@
+---
+title: "Size Sound Symbolism"
+author: "Bodo Winter"
+date: "2/13/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Preparation:
+
+Load libraries:
+
+```{r message = FALSE, warning = FALSE}
+library(tidyverse)
+library(ranger) # for random forests
+library(tuneRanger) # for tuning random forest parameters
+library(effsize) # for Cohen's d
+library(lsr) # for Cramer's V effect size
+```
+
+For citations:
+
+```{r}
+packageVersion('tidyverse')
+packageVersion('ranger')
+packageVersion('tuneRanger')
+packageVersion('effsize')
+packageVersion('lsr')
+```
+
+Load data:
+
+```{r message = FALSE, warning = FALSE}
+# Thesaurus.com size adjective data:
+
+adj <- read_csv('../data/thesaurus_dot_com_may23_2020.csv')
+
+# SUBTLEX data for corpus-based POS tags and frequencies:
+
+SUBTL <- read_csv('../data/SUBTLEX_US_with_POS.csv') %>% 
+  dplyr::select(Word, FREQcount, Dom_PoS_SUBTLEX) %>% 
+  rename(POS = Dom_PoS_SUBTLEX)
+
+# ELP data for morpheme number:
+
+ELP <- read_csv('../data/ELP_with_POS_cleaned.csv')
+
+# Glasgow norms:
+
+glasgow <- read_csv('../data/glasgow_norms.csv')
+
+# CMU dictionary, and phoneme label metadata:
+
+CMU <- read_csv('../data/CMU_phoneme_counts.csv')
+phones <- read_csv('../data/CMU_phonemes.csv')
+```
+
+
+## CMU phoneme labels:
+
+Load in phoneme classifications. They contain formant data from Hillenbrand, Getty, Clark, & Wheeler (1995), "Acoustic characteristics of American English vowels", JASA — which we are not going to use here. This produced some interesting results in earlier versions of this script, but we decided that mapping existing formant data from just one dialect to phonemic representations (without actual acoustic data) is too problematic.
+
+Get IPA characters for plotting consonants:
+
+```{r}
+phones$IPA <- character(nrow(phones))
+phones[phones$Phoneme == 'AA', ]$IPA <- 'ɑ'
+phones[phones$Phoneme == 'AE', ]$IPA <- 'æ'
+phones[phones$Phoneme == 'AH', ]$IPA <- 'ʌ'
+phones[phones$Phoneme == 'AO', ]$IPA <- 'ɔ'
+phones[phones$Phoneme == 'AW', ]$IPA <- 'aʊ'
+phones[phones$Phoneme == 'AY', ]$IPA <- 'aɪ'
+phones[phones$Phoneme == 'B', ]$IPA <- 'b'
+phones[phones$Phoneme == 'CH', ]$IPA <- 'tʃ'
+phones[phones$Phoneme == 'D', ]$IPA <- 'd'
+phones[phones$Phoneme == 'DH', ]$IPA <- 'ð'
+phones[phones$Phoneme == 'EH', ]$IPA <- 'ɛ'
+phones[phones$Phoneme == 'ER', ]$IPA <- 'ɝ'
+phones[phones$Phoneme == 'EY', ]$IPA <- 'eɪ'
+phones[phones$Phoneme == 'F', ]$IPA <- 'f'
+phones[phones$Phoneme == 'G', ]$IPA <- 'g'
+phones[phones$Phoneme == 'HH', ]$IPA <- 'h'
+phones[phones$Phoneme == 'IH', ]$IPA <- 'i'
+phones[phones$Phoneme == 'IY', ]$IPA <- 'ɪ'
+phones[phones$Phoneme == 'JH', ]$IPA <- 'dʒ'
+phones[phones$Phoneme == 'K', ]$IPA <- 'k'
+phones[phones$Phoneme == 'L', ]$IPA <- 'l'
+phones[phones$Phoneme == 'M', ]$IPA <- 'm'
+phones[phones$Phoneme == 'N', ]$IPA <- 'n'
+phones[phones$Phoneme == 'NG', ]$IPA <- 'ŋ'
+phones[phones$Phoneme == 'OW', ]$IPA <- 'oʊ'
+phones[phones$Phoneme == 'OY', ]$IPA <- 'ɔɪ'
+phones[phones$Phoneme == 'P', ]$IPA <- 'p'
+phones[phones$Phoneme == 'R', ]$IPA <- 'r'
+phones[phones$Phoneme == 'SH', ]$IPA <- 'ʃ'
+phones[phones$Phoneme == 'S', ]$IPA <- 's'
+phones[phones$Phoneme == 'T', ]$IPA <- 't'
+phones[phones$Phoneme == 'TH', ]$IPA <- 'θ'
+phones[phones$Phoneme == 'UH', ]$IPA <- 'ʊ'
+phones[phones$Phoneme == 'UW', ]$IPA <- 'u'
+phones[phones$Phoneme == 'V', ]$IPA <- 'v'
+phones[phones$Phoneme == 'W', ]$IPA <- 'w'
+phones[phones$Phoneme == 'Y', ]$IPA <- 'j'
+phones[phones$Phoneme == 'Z', ]$IPA <- 'z'
+phones[phones$Phoneme == 'ZH', ]$IPA <- 'ʒ'
+
+# Check:
+
+phones
+```
+
+## Adjectives data:
+
+Make adjective column lowercase (only because of "Lilliputian"):
+
+```{r}
+adj <- mutate(adj,
+              Word = str_to_lower(Word))
+```
+
+Get rid of those that do not relate to size, that are multi-word, or that are not adjectives:
+
+```{r}
+adj <- filter(adj,
+              Multiword == 'no',
+              AdjectiveYesNo == 'yes',
+              SizeYesNo == 'yes')
+```
+
+*Important:* "pocket" was excluded as well, because it is presumably based on the multi word "pocket-sized".
+
+*Important:* duplicates are still in there, but only across synonym sets... this is deliberate as we want to do separate analyses for big/large/huge synonyms etc.
+
+Get rid of 'sizable', 'oversize', and 'undersized':
+
+```{r}
+adj <- filter(adj,
+              !(Word %in% c('sizable', 'oversize', 'undersized')))
+```
+
+Merge adjectives with pronunciations based on stems:
+
+```{r}
+adj <- left_join(adj, CMU, by = c('Stem' = 'Word'))
+```
+
+Check words for which we don't have CMU transcriptions:
+
+```{r}
+filter(adj, is.na(AH))$Stem
+```
+
+Fill in missing ones:
+
+```{r}
+# enormous (stem: enorm)
+
+adj[adj$Word == 'enormous', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'enormous', ]$IH <- 1
+adj[adj$Word == 'enormous', ]$N <- 1
+adj[adj$Word == 'enormous', ]$AO <- 1
+adj[adj$Word == 'enormous', ]$R <- 1
+adj[adj$Word == 'enormous', ]$M <- 1
+
+# gigantic (stem: gigant)
+
+adj[adj$Word == 'gigantic', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'gigantic', ]$JH <- 1
+adj[adj$Word == 'gigantic', ]$AY <- 1
+adj[adj$Word == 'gigantic', ]$G <- 1
+adj[adj$Word == 'gigantic', ]$AE <- 1
+adj[adj$Word == 'gigantic', ]$N <- 1
+adj[adj$Word == 'gigantic', ]$T <- 1
+
+# humngous (stem: humong)
+
+adj[adj$Word == 'humongous', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'humongous', ]$HH <- 1
+adj[adj$Word == 'humongous', ]$UW <- 1
+adj[adj$Word == 'humongous', ]$M <- 1
+adj[adj$Word == 'humongous', ]$NG <- 1
+adj[adj$Word == 'humongous', ]$G <- 1
+adj[adj$Word == 'humongous', ]$AO <- 1
+
+# tremendous (stem: tremend)
+
+adj[adj$Word == 'tremendous', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'tremendous', ]$T <- 1
+adj[adj$Word == 'tremendous', ]$R <- 1
+adj[adj$Word == 'tremendous', ]$EH <- 1
+adj[adj$Word == 'tremendous', ]$M <- 1
+adj[adj$Word == 'tremendous', ]$ER <- 1
+adj[adj$Word == 'tremendous', ]$N <- 1
+adj[adj$Word == 'tremendous', ]$D <- 1
+
+# whopping (stem: wop)
+
+adj[adj$Word == 'whopping', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'whopping', ]$W <- 1
+adj[adj$Word == 'whopping', ]$AA <- 1
+adj[adj$Word == 'whopping', ]$P <- 1
+
+# behemontic: bɪhimɒntɪc
+
+adj[adj$Word == 'behemontic', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'behemontic', 'B'] <- 1
+adj[adj$Word == 'behemontic', 'IH'] <- 1 # 2 if full word is used
+adj[adj$Word == 'behemontic', 'HH'] <- 1
+adj[adj$Word == 'behemontic', 'IY'] <- 1
+adj[adj$Word == 'behemontic', 'M'] <- 1
+adj[adj$Word == 'behemontic', 'AA'] <- 1
+adj[adj$Word == 'behemontic', 'N'] <- 1
+adj[adj$Word == 'behemontic', 'T'] <- 1
+# adj[adj$Word == 'behemontic', 'K'] <- 1
+
+# colossal (stem: coloss)
+
+adj[adj$Word == 'colossal', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'colossal', ]$K <- 1
+adj[adj$Word == 'colossal', ]$AA <- 1
+adj[adj$Word == 'colossal', ]$L <- 1
+adj[adj$Word == 'colossal', ]$AH <- 1
+adj[adj$Word == 'colossal', ]$S <- 1
+
+# cyclopean (stem: cyclop)
+
+adj[adj$Word == 'cyclopean', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'cyclopean', ]$S <- 1
+adj[adj$Word == 'cyclopean', ]$AY <- 1
+adj[adj$Word == 'cyclopean', ]$K <- 1
+adj[adj$Word == 'cyclopean', ]$L <- 1
+adj[adj$Word == 'cyclopean', ]$AO <- 1
+adj[adj$Word == 'cyclopean', ]$P <- 1
+
+# minikin: mɪnɪkɪn
+
+adj[adj$Word == 'minikin', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'minikin', 'IH'] <- 3
+adj[adj$Word == 'minikin', 'M'] <- 1
+adj[adj$Word == 'minikin', 'N'] <- 1
+adj[adj$Word == 'minikin', 'K'] <- 1
+
+# puny
+
+adj[adj$Word == 'puny', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'puny', 'P'] <- 1
+adj[adj$Word == 'puny', 'Y'] <- 1
+adj[adj$Word == 'puny', 'UW'] <- 1
+adj[adj$Word == 'puny', 'N'] <- 1
+
+# puny
+
+adj[adj$Word == 'runty', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'runty', 'R'] <- 1
+adj[adj$Word == 'runty', 'AH'] <- 1
+adj[adj$Word == 'runty', 'N'] <- 1
+adj[adj$Word == 'runty', 'T'] <- 1
+
+# miscroscope:
+
+adj[adj$Word == 'microscopic', colnames(select(adj, AA:ZH))] <- filter(CMU, Word == 'microscope') %>% select(AA:ZH)
+
+# substantial:
+
+adj[adj$Word == 'substantial', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'substantial', 'S'] <- 2
+adj[adj$Word == 'substantial', 'AH'] <- 2
+adj[adj$Word == 'substantial', 'B'] <- 1
+adj[adj$Word == 'substantial', 'N'] <- 1
+adj[adj$Word == 'substantial', 'T'] <- 1
+
+# gargantuan (stem: gargant)
+
+adj[adj$Word == 'gargantuan', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'gargantuan', 'G'] <- 2
+adj[adj$Word == 'gargantuan', 'AA'] <- 1
+adj[adj$Word == 'gargantuan', 'R'] <- 1
+adj[adj$Word == 'gargantuan', 'AE'] <- 1
+adj[adj$Word == 'gargantuan', 'N'] <- 1
+adj[adj$Word == 'gargantuan', 'T'] <- 1
+
+# lilliputian (stem: lilliput)
+
+adj[adj$Word == 'lilliputian', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'lilliputian', 'L'] <- 2
+adj[adj$Word == 'lilliputian', 'IH'] <- 2
+adj[adj$Word == 'lilliputian', 'P'] <- 1
+adj[adj$Word == 'lilliputian', 'UH'] <- 1
+adj[adj$Word == 'lilliputian', 'T'] <- 1
+
+# minuscular: mɪnəskjulə
+
+adj[adj$Word == 'minuscular', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'minuscular', 'M'] <- 1
+adj[adj$Word == 'minuscular', 'IH'] <- 1
+adj[adj$Word == 'minuscular', 'N'] <- 1
+adj[adj$Word == 'minuscular', 'AH'] <- 1
+adj[adj$Word == 'minuscular', 'S'] <- 1
+adj[adj$Word == 'minuscular', 'K'] <- 1
+adj[adj$Word == 'minuscular', 'L'] <- 1
+adj[adj$Word == 'minuscular', 'UW'] <- 1
+adj[adj$Word == 'minuscular', 'Y'] <- 1
+# adj[adj$Word == 'minuscular', 'ER'] <- 1
+
+# teensy-weensy: tinzi-winzi
+
+# adj[adj$Word == 'teensy-weensy', colnames(select(adj, AA:ZH))] <- 0
+# adj[adj$Word == 'teensy-weensy', 'T'] <- 1
+# adj[adj$Word == 'teensy-weensy', 'IY'] <- 1 # 4 is full word is used
+# adj[adj$Word == 'teensy-weensy', 'N'] <- 2
+# adj[adj$Word == 'teensy-weensy', 'Z'] <- 1
+# # adj[adj$Word == 'teensy-weensy', 'W'] <- 1
+
+# runty: rʌnti
+
+adj[adj$Word == 'runty', colnames(select(adj, AA:ZH))] <- 0
+adj[adj$Word == 'runty', 'R'] <- 1
+adj[adj$Word == 'runty', 'AH'] <- 1
+adj[adj$Word == 'runty', 'N'] <- 1
+adj[adj$Word == 'runty', 'T'] <- 1
+# adj[adj$Word == 'runty', 'IY'] <- 1
+
+# For 'prodigious' we need to get rid of the 'IY' in 'prodigy' (which I used for matching):
+
+adj[adj$Word == 'prodigious', 'IY'] <- 0
+```
+
+Get word length as phoneme count, based on stems only:
+
+```{r}
+adj$NPhon <- rowSums(select(adj, AA:ZH))
+```
+
+Add syllable count and full word phoneme count (from ELP):
+
+```{r}
+adj$ELP_NPhon <- ELP[match(adj$Word, ELP$Word), ]$NPhon
+adj$ELP_NSyll <- ELP[match(adj$Word, ELP$Word), ]$NSyll
+```
+
+Create a set of new phoneme columns that have a present/absent variable. We will compare which one works better. Make phoneme columns into a present/absent variable. I am using "01" here as the label for presence/absence:
+
+```{r}
+phon_01 <- apply(select(adj, AA:ZH), 2,
+                 FUN = function(x) ifelse(x >= 1, 1, 0))
+colnames(phon_01) <- str_c(colnames(phon_01), '_01')
+```
+
+Attach to main data frame:
+
+```{r}
+adj <- bind_cols(adj, as_tibble(phon_01))
+```
+
+First analysis, code huge/large/big as '+big' and tiny/small as '-big':
+
+```{r}
+adj <- mutate(adj,
+              SizeCat = ifelse(SeedWord %in% c('big', 'large', 'huge'),
+                                    'big/large/huge', 'small/tiny'))
+```
+
+What are the words? Here's all big ones:
+
+```{r}
+sort(filter(adj, SizeCat == 'big/large/huge')$Word)
+```
+
+Just in case you ask: Prodigious does in fact have a size meaning listed first... and that's our criterion!
+
+Here's all small ones:
+
+```{r}
+sort(filter(adj, SizeCat != 'big/large/huge')$Word)
+```
+
+Get rid of those that are related, except for "behemontic" and "mammoth" as the relation is only one of suspected cross-influence; they are not the same root.
+
+```{r}
+adj[adj$Word == 'mammoth', ]$RelatedTo <- 'none'
+adj[adj$Word == 'behemontic', ]$RelatedTo <- 'none'
+
+# Take those that have no etymologically related form (these are safe):
+
+not_related <- filter(adj,
+                      RelatedTo == 'none')
+
+# Take only one of the relateds:
+
+relateds <- filter(adj, RelatedTo != 'none') %>%
+  arrange(Word) %>% # arrange alphabetical
+  filter(!duplicated(RelatedTo))
+
+# Merge again:
+
+adj_red <- bind_rows(not_related, relateds)
+```
+
+For both the reduced and the full dataset, get rid of duplicates:
+
+```{r}
+adj_red <- filter(adj_red,
+                  !duplicated(Word))
+adj <- filter(adj,
+              !duplicated(Word))
+```
+
+For the dataset that does contain the related ones, create an ID variable with unique identifiers:
+
+```{r}
+codes <- tibble(RelatedTo = unique(adj$RelatedTo),
+                RelatedID = LETTERS[1:length(unique(adj$RelatedTo))])
+adj <- left_join(adj, codes)
+
+# Create unique IDs for "none":
+
+adj$RelatedID <- numeric(nrow(adj))
+adj[adj$RelatedTo == 'none', ]$RelatedID <- 1:nrow(adj[adj$RelatedTo == 'none', ])
+
+# Check:
+
+table(adj$RelatedID)
+```
+
+So, each word that has a number is unique (no relateds), the few that are related have letters.
+
+Check:
+
+```{r}
+nrow(adj)
+nrow(adj_red)
+```
+
+52 words in total for the reduced dataset. How many per category?
+
+```{r}
+adj %>% count(SizeCat)
+adj_red %>% count(SizeCat)
+```
+
+34 big ones, 18 small ones.
+
+What are the words? Here's all big ones:
+
+```{r}
+sort(filter(adj, SizeCat == 'big/large/huge')$Word)
+```
+
+Just in case you ask: Prodigious does in fact have a size meaning listed first... and that's our criterion!
+
+Here's all small ones:
+
+```{r}
+sort(filter(adj, SizeCat != 'big/large/huge')$Word)
+```
+
+## Random forest analysis
+
+Create vectors of all vowels and consonants, which will be used for random forest formulas. We'll treat 'j' and 'w' as vowels in this analysis.
+
+```{r}
+vowels <- filter(phones, Class == 'vowel')$Phoneme
+consonants <- filter(phones, Class != 'vowel')$Phoneme
+```
+
+Make this into formulas (predictor side only, to the right of "~"):
+
+```{r}
+# Presence/absence versions:
+
+V_formula_01 <- str_c(str_c(vowels, '_01'), collapse = ' + ')
+C_formula_01 <- str_c(str_c(consonants, '_01'), collapse = ' + ')
+
+# Put them all into one formula:
+
+all_formula_01 <- str_c(str_c(c(consonants, vowels), '_01'), collapse = ' + ')
+```
+
+We need to convert "SizeCat" into a factor for this:
+
+```{r}
+adj <- mutate(adj,
+              SizeCat = factor(SizeCat))
+adj_red <- mutate(adj_red,
+                  SizeCat = factor(SizeCat))
+```
+
+Next, we need to find the right hyperparameters for this dataset. These are values that control the random forest, such as how many random variables to consider per tree etc. For this we use tuneRanger (see Probst et al. 2019, WIREs Data Mining Knowl Discov.).
+
+First, make this into a classification task (since we have a categorical dependent measure). For this the data frame should only have the variables of interest and the classes to predict (the focus type). Unfortunately tuneRanger doesn't seem to like tibbles (booooh!). Also we need to factor code the focus column:
+
+```{r}
+# Select only columns that are relevant to the task at hand:
+
+adj_task <- bind_cols(select(adj, SizeCat),
+                      select(adj, contains('_01')))
+adj_red_task <- bind_cols(select(adj_red, SizeCat),
+                          select(adj_red, contains('_01')))
+
+# Make all 01 columns into factors:
+
+adj_task <- adj_task %>% mutate_if(is.double, as.factor)
+adj_red_task <- adj_red_task %>% mutate_if(is.double, as.factor)
+
+# Make into data frames:
+
+adj_task <- as.data.frame(adj_task)
+adj_red_task <- as.data.frame(adj_red_task)
+
+# Make into task object:
+
+adj_task <- makeClassifTask(data = adj_task, target = 'SizeCat')
+adj_red_task <- makeClassifTask(data = adj_red_task, target = 'SizeCat')
+```
+
+Let's tune the tree:
+
+```{r, warning = FALSE, message = FALSE}
+set.seed(666) # a nice number
+adj_tunes <- tuneRanger(adj_task, measure = list(multiclass.brier),
+                        num.trees = 1000, num.threads = 4,
+                        iters = 70, iters.warmup = 30)
+
+adj_red_tunes <- tuneRanger(adj_red_task, measure = list(multiclass.brier),
+                            num.trees = 1000, num.threads = 4,
+                            iters = 70, iters.warmup = 30)
+```
+
+Just copied defaults from Probst et al. (2019), will have to give this some extra thought.
+
+Check results:
+
+```{r}
+adj_tunes
+adj_red_tunes
+```
+
+Run ranger with the new tuned hyperparameters.
+
+```{r}
+adj_ranger <- ranger(formula = str_c('SizeCat ~ ', all_formula_01),
+                     probability = FALSE,
+                     data = adj,
+                     mtry = 5, min.node.size = 6, sample.fraction = 0.8698498,
+                     num.trees = 1000,
+                     seed = 666,
+                     importance = 'permutation')
+adj_red_ranger <- ranger(formula = str_c('SizeCat ~ ', all_formula_01),
+                         probability = FALSE,
+                         data = adj_red,
+                         mtry = 29, min.node.size = 4, sample.fraction = 0.7873799,
+                         num.trees = 1000,
+                         seed = 666,
+                         importance = 'permutation')
+```
+
+Check:
+
+```{r}
+adj_ranger
+adj_red_ranger
+```
+
+Get predictions:
+
+```{r}
+all_preds <- predict(adj_ranger, data = adj)$predictions
+all_preds_red <- predict(adj_red_ranger, data = adj_red)$predictions
+```
+
+The predictions are given as probabilities ... to compute accuracies this needs to be discretized. The next chunk also puts them into a table:
+
+```{r}
+all_tab <- table(adj$SizeCat, all_preds)
+all_tab_red <- table(adj_red$SizeCat, all_preds_red)
+```
+
+Check:
+
+```{r}
+all_tab
+all_tab_red
+```
+
+Compute accuracies:
+
+```{r}
+sum(diag(all_tab)) / sum(all_tab)
+sum(diag(all_tab_red)) / sum(all_tab_red)
+```
+
+Nearly identical, which is nice.
+
+What are the ones that are mis-classified?
+
+```{r}
+filter(adj, SizeCat != all_preds) %>% select(SizeCat, Word)
+filter(adj_red, SizeCat != all_preds_red) %>% select(SizeCat, Word)
+```
+
+Baseline considerations? What do we expect if we just predict the majority class?
+
+```{r}
+table(adj$SizeCat) / length(adj$SizeCat)
+table(adj_red$SizeCat) / length(adj_red$SizeCat)
+```
+
+We'd expect 54% correct for the full dataset, and 65% correct for the reduced one.
+
+## Variable importances
+
+Check variable importances:
+
+```{r}
+all_important <- sort(adj_red_ranger$variable.importance, decreasing = TRUE)
+```
+
+Put into tibble:
+
+```{r}
+all_important <- tibble(Phoneme = names(all_important),
+                      Importance = all_important)
+
+# Get rid of "_01" for this:
+
+all_important <- mutate(all_important,
+                        Phoneme = str_replace(Phoneme, '_01', ''))
+
+# Merge IPA characters into there:
+
+all_important <- left_join(all_important, select(phones, Phoneme, IPA))
+```
+
+Show in order:
+
+```{r}
+arrange(all_important, desc(Importance))
+```
+
+Make a plot of the most predictive segments:
+
+```{r, fig.width = 10, fig.height = 8}
+all_importance_plot <- all_important %>% 
+  slice_head(n = 10) %>% 
+  ggplot(aes(x = reorder(IPA, Importance), y = Importance)) +
+  geom_point() +
+  ylab('Relative variable importance') +
+  xlab('') + 
+  geom_hline(yintercept = abs(min(all_important$Importance)), linetype = 2) +
+  geom_hline(yintercept = 0) +
+  coord_flip() +
+  theme_minimal() +
+  theme(axis.title.x = element_text(face = 'bold',
+                                    margin = margin(t = 15, b = 0,
+                                                    r = 0, l = 0),
+                                    size = 14),
+        axis.text.y = element_text(face = 'bold',
+                                   size = 12))
+
+# Look:
+
+all_importance_plot
+
+# Save:
+
+ggsave(plot = all_importance_plot,
+       filename = '../figures/variable_importances.png',
+       width = 8, height = 5)
+```
+
+## Explore effects of most relevant predictors:
+
+Create crosstabulations:
+
+```{r}
+IY_tab <- with(adj_red, table(SizeCat, IY_01))
+IH_tab <- with(adj_red, table(SizeCat, IH_01))
+T_tab <- with(adj_red, table(SizeCat, T_01))
+AA_tab <- with(adj_red, table(SizeCat, AA_01))
+```
+
+Check the actual counts:
+
+```{r}
+IY_tab
+IH_tab
+T_tab
+AA_tab
+```
+
+Check them with row-wise proportions:
+
+```{r}
+round(prop.table(IY_tab, 1), 2)
+round(prop.table(IH_tab, 1), 2)
+round(prop.table(T_tab, 1), 2)
+round(prop.table(AA_tab, 1), 2)
+```
+
+Check effect sizes (Cramer's V for contingency tables):
+
+```{r, warning = FALSE, message = FALSE}
+cramersV(IY_tab)
+cramersV(IH_tab)
+cramersV(T_tab)
+cramersV(AA_tab)
+```
+
+For df = 1, 0.10 = small, medium = 0.3, large = 0.5
+
+## Vowel versus consonant forests
+
+Fit random forests for vowels and consonants separately. First, we need to tune the hyperparameters again since we now have different predictor sets.
+
+```{r}
+# Select only columns that are relevant to the task at hand:
+
+vowel_task <- bind_cols(adj_red[, str_c(vowels, '_01')],
+                        select(adj_red, SizeCat))
+consonant_task <- bind_cols(adj_red[, str_c(consonants, '_01')],
+                            select(adj_red, SizeCat))
+
+# Make all 01 columns into factors:
+
+vowel_task <- vowel_task %>% mutate_if(is.double, as.factor)
+consonant_task <- consonant_task %>% mutate_if(is.double, as.factor)
+
+# Make into data frames:
+
+vowel_task <- as.data.frame(vowel_task)
+consonant_task <- as.data.frame(consonant_task)
+
+# Make into task object:
+
+vowel_task <- makeClassifTask(data = vowel_task, target = 'SizeCat')
+consonant_task <- makeClassifTask(data = consonant_task, target = 'SizeCat')
+```
+
+Let's tune these forests:
+
+```{r, warning = FALSE, message = FALSE}
+set.seed(666) # a nice number
+vowel_tunes <- tuneRanger(vowel_task, measure = list(multiclass.brier),
+                        num.trees = 1000, num.threads = 4,
+                        iters = 70, iters.warmup = 30)
+
+consonant_tunes <- tuneRanger(consonant_task, measure = list(multiclass.brier),
+                            num.trees = 1000, num.threads = 4,
+                            iters = 70, iters.warmup = 30)
+```
+
+Check the recommended hyperparameters:
+
+```{r}
+vowel_tunes
+consonant_tunes
+```
+
+Run the forests with the respective parameters:
+
+```{r}
+V_forest <- ranger(formula = str_c('SizeCat ~ ', V_formula_01),
+                   importance = 'permutation', num.trees = 1000,
+                   probability = FALSE,
+                   seed = 666,
+                   mtry = 3, min.node.size = 3,
+                   sample.fraction = 0.3281979,
+                   data = adj_red)
+
+C_forest <- ranger(formula = str_c('SizeCat ~ ', C_formula_01),
+                   importance = 'permutation', num.trees = 1000,
+                   probability = FALSE,
+                   mtry = 8,
+                   min.node.size = 11,
+                   sample.fraction = 0.2051173,
+                   seed = 42,
+                   data = adj_red)
+```
+
+Check:
+
+```{r}
+V_forest
+C_forest
+```
+
+Get predictions:
+
+```{r}
+V_preds <- predict(V_forest, data = adj_red)$predictions
+C_preds <- predict(C_forest, data = adj_red)$predictions
+```
+
+Tables for classification accuracy:
+
+```{r}
+V_tab <- table(adj_red$SizeCat, V_preds)
+C_tab <- table(adj_red$SizeCat, C_preds)
+```
+
+Check:
+
+```{r}
+V_tab
+C_tab
+```
+
+Check classification accuracy:
+
+```{r}
+sum(diag(V_tab)) / sum(V_tab)
+sum(diag(C_tab)) / sum(C_tab)
+```
+
+## Impact of etymological relatedness on random forest
+
+How do the above compare to the dataset that has no etymological relatives (all independent data points)?
+
+```{r}
+red_forest_01 <- ranger(formula = str_c('SizeCat ~ ', all_formula_01),
+                        importance = 'permutation',
+                        probability = TRUE,
+                        mtry = 29, min.node.size = 4, sample.fraction = 0.7873799,
+                        seed = 666,
+                        data = adj_red,
+                        keep.inbag = TRUE)
+red_forest_01
+```
+
+Check accuracy:
+
+```{r}
+red_preds_01 <- predict(red_forest_01, data = adj_red)$predictions
+red_tab_01 <- table(adj_red$SizeCat,
+                    ifelse(red_preds_01[, 1] >= 0.5,
+                           'big/large/huge', 'small/tiny'))
+sum(diag(red_tab_01)) / sum(red_tab_01)                           
+```
+
+Check which words ranger is most certain about:
+
+```{r}
+adj_red$Probability <- red_preds_01[, 1]
+
+# Big ordered by certainty:
+
+big_probs <- filter(adj_red, SizeCat == 'big/large/huge') %>%
+  select(Word, SizeCat, Probability) %>% 
+  arrange(desc(Probability))
+big_probs %>% print(n = Inf)
+
+# Small ordered by certainty:
+
+small_probs <- filter(adj_red, SizeCat != 'big/large/huge') %>%
+  select(Word, SizeCat, Probability) %>% 
+  arrange(Probability)
+small_probs %>% print(n = Inf)
+```
+
+Write this to a table:
+
+```{r}
+word_table <- bind_rows(small_probs, big_probs) %>% 
+  mutate(Probability = round(Probability, 2))
+write_csv(word_table, '../data/random_forestclassifications.csv')
+```
+
+
+## Glasgow norms:
+
+Extract size and the Glasgow concreteness ratings:
+
+```{r}
+glasgow <- select(glasgow,
+                  Word, Concreteness, Size)
+nrow(glasgow) # Check
+```
+
+Clean Glasgow norms — get rid of the sense information so that we can merge word senses:
+
+```{r}
+glasgow <- mutate(glasgow,
+                  Word = str_replace(Word, ' \\(.+?\\)', ''))
+```
+
+Show duplicate examples:
+
+```{r}
+filter(glasgow, duplicated(Word))
+```
+
+Duplicates are different senses of the same word. For this we will merge:
+
+```{r}
+glasgow <- glasgow %>% group_by(Word) %>% 
+  summarize(Size = mean(Size),
+            Concreteness = mean(Concreteness))
+nrow(glasgow) # Check
+```
+
+Merge with morpheme data:
+
+```{r}
+glasgow <- left_join(glasgow, select(ELP, Word, NMorph))
+```
+
+For how many do we have morpheme data?
+
+```{r}
+sum(!is.na(glasgow$NMorph))
+sum(!is.na(glasgow$NMorph)) / nrow(glasgow)
+```
+
+For most of them.
+
+Let's get only the monomorphemic words:
+
+```{r}
+glasgow <- filter(glasgow, NMorph == 1)
+nrow(glasgow)
+```
+
+Merge with pronuciations:
+
+```{r}
+glasgow <- left_join(glasgow, filter(CMU, !duplicated(Word)))
+```
+
+For how many do we not have pronunciations?
+
+```{r}
+# Missing pronunciations for these:
+
+sum(is.na(glasgow$AA))
+sum(is.na(glasgow$AA)) / nrow(glasgow) # only 1%
+nrow(glasgow) - sum(is.na(glasgow$AA))
+```
+
+Get rid of those for which we have no pronunciations:
+
+```{r}
+glasgow <- filter(glasgow, !is.na(AA))
+nrow(glasgow)
+```
+
+Get word length as phoneme count:
+
+```{r}
+glasgow$NPhon <- rowSums(select(glasgow, AA:ZH))
+```
+
+Make phoneme columns into a present/absent variable:
+
+```{r}
+glasgow[, colnames(select(glasgow, AA:ZH))] <- apply(select(glasgow, AA:ZH), 2,
+                                                     FUN = function(x) ifelse(x >= 1, 1, 0))
+```
+
+Merge with SUBTL POS tags:
+
+```{r}
+glasgow <- left_join(glasgow, SUBTL)
+```
+
+Check POS tags (this is the DOMINANT POS tag, that is, whatever this word was used most frequently as in the corpus):
+
+```{r}
+table(glasgow$POS)
+nrow(glasgow)
+```
+
+Get only the three major content word classes (adjectives, nouns, verbs) — there's only 64 adjectives, so these won't be considered here...
+
+```{r}
+glasgow <- filter(glasgow,
+                  POS %in% c('Adjective', 'Verb', 'Noun'))
+
+# Check:
+
+table(glasgow$POS)
+nrow(glasgow)
+```
+
+For comparison, we will create a forest with a median split dataset:
+
+```{r}
+glasgow <- mutate(glasgow,
+                  SizeCat = ifelse(Size > median(Size), 'large', 'small'),
+                  SizeCat = factor(SizeCat))
+```
+
+Get adj/noun/verb subsets:
+
+```{r}
+glasgow_adj <- filter(glasgow, POS == 'Adjective')
+glasgow_verb <- filter(glasgow, POS == 'Verb')
+glasgow_noun <- filter(glasgow, POS == 'Noun')
+```
+
+Tune hyperparameters to this data:
+
+```{r}
+# Select only columns that are relevant to the task at hand:
+
+glasgow_task <- bind_cols(select(glasgow, SizeCat),
+                      select(glasgow, AA:ZH))
+glasgow_adj_task <- bind_cols(select(glasgow_adj, SizeCat),
+                          select(glasgow_adj, AA:ZH))
+glasgow_verb_task <- bind_cols(select(glasgow_verb, SizeCat),
+                          select(glasgow_verb, AA:ZH))
+glasgow_noun_task <- bind_cols(select(glasgow_noun, SizeCat),
+                          select(glasgow_noun, AA:ZH))
+
+# Make all 01 columns into factors:
+
+glasgow_task <- glasgow_task %>% mutate_if(is.double, as.factor)
+glasgow_adj_task <- glasgow_adj_task %>% mutate_if(is.double, as.factor)
+glasgow_verb_task <- glasgow_verb_task %>% mutate_if(is.double, as.factor)
+glasgow_noun_task <- glasgow_noun_task %>% mutate_if(is.double, as.factor)
+
+# Make into data frames:
+
+glasgow_task <- as.data.frame(glasgow_task)
+glasgow_adj_task <- as.data.frame(glasgow_adj_task)
+glasgow_verb_task <- as.data.frame(glasgow_verb_task)
+glasgow_noun_task <- as.data.frame(glasgow_noun_task)
+
+# Make into task object:
+
+glasgow_task <- makeClassifTask(data = glasgow_task, target = 'SizeCat')
+glasgow_adj_task <- makeClassifTask(data = glasgow_adj_task, target = 'SizeCat')
+glasgow_verb_task <- makeClassifTask(data = glasgow_verb_task, target = 'SizeCat')
+glasgow_noun_task <- makeClassifTask(data = glasgow_noun_task, target = 'SizeCat')
+```
+
+Let's tune the tree:
+
+```{r, warning = FALSE, message = FALSE}
+set.seed(666) # a nice number
+glasgow_tunes <- tuneRanger(glasgow_task, measure = list(multiclass.brier),
+                            num.trees = 1000, num.threads = 4,
+                            iters = 70, iters.warmup = 30)
+
+glasgow_adj_tunes <- tuneRanger(glasgow_adj_task, measure = list(multiclass.brier),
+                                num.trees = 1000, num.threads = 4,
+                                iters = 70, iters.warmup = 30)
+
+glasgow_verb_tunes <- tuneRanger(glasgow_verb_task, measure = list(multiclass.brier),
+                                 num.trees = 1000, num.threads = 4,
+                                 iters = 70, iters.warmup = 30)
+
+glasgow_noun_tunes <- tuneRanger(glasgow_noun_task, measure = list(multiclass.brier),
+                                 num.trees = 1000, num.threads = 4,
+                                 iters = 70, iters.warmup = 30)
+```
+
+Check recommended hyperparameter settings:
+
+```{r}
+glasgow_tunes
+glasgow_adj_tunes
+glasgow_verb_tunes
+glasgow_noun_tunes
+```
+
+Create the formula:
+
+```{r}
+all_formula <- str_c(c(consonants, vowels), collapse = ' + ')
+```
+
+Fit random forests:
+
+```{r}
+glasgow_forest <- ranger(formula = str_c('SizeCat ~ ', all_formula),
+                         importance = 'permutation', num.trees = 1000,
+                         probability = FALSE,
+                         mtry = 4,
+                         min.node.size = 8,
+                         sample.fraction = 0.251633,
+                         seed = 42,
+                         data = glasgow)
+
+glasgow_adj_forest <- ranger(formula = str_c('SizeCat ~ ', all_formula),
+                             importance = 'permutation', num.trees = 1000,
+                             probability = FALSE,
+                             mtry = 4,
+                             min.node.size = 4,
+                             sample.fraction = 0.3790906,
+                             seed = 42,
+                             data = glasgow_adj)
+
+glasgow_verb_forest <- ranger(formula = str_c('SizeCat ~ ', all_formula),
+                              importance = 'permutation', num.trees = 1000,
+                              probability = FALSE,
+                              mtry = 5,
+                              min.node.size = 84,
+                              sample.fraction = 0.8328327,
+                              seed = 42,
+                              data = glasgow_verb)
+
+glasgow_noun_forest <- ranger(formula = str_c('SizeCat ~ ', all_formula),
+                              importance = 'permutation', num.trees = 1000,
+                              probability = FALSE,
+                              mtry = 11,
+                              min.node.size = 51,
+                              sample.fraction = 0.2235099,
+                              seed = 42,
+                              data = glasgow_noun)
+```
+
+Check the forest performance:
+
+```{r}
+glasgow_forest
+glasgow_noun_forest
+glasgow_verb_forest
+glasgow_adj_forest
+```
+
+Get the predictions:
+
+```{r}
+glasgow_preds <- predict(glasgow_forest, data = glasgow)$predictions
+glasgow_verb_preds <- predict(glasgow_verb_forest, data = glasgow_verb)$predictions
+glasgow_noun_preds <- predict(glasgow_noun_forest, data = glasgow_noun)$predictions
+glasgow_adj_preds <- predict(glasgow_adj_forest, data = glasgow_adj)$predictions
+```
+
+Get contigency tables of real versus predicted:
+
+```{r}
+glas_tab <- table(glasgow$SizeCat, glasgow_preds)
+verb_tab <- table(glasgow_verb$SizeCat, glasgow_verb_preds)
+noun_tab <- table(glasgow_noun$SizeCat, glasgow_noun_preds)
+adj_tab <- table(glasgow_adj$SizeCat, glasgow_adj_preds)
+```
+
+Check the accuracies of theese:
+
+```{r}
+sum(diag(glas_tab)) / sum(glas_tab)
+sum(diag(verb_tab)) / sum(verb_tab)
+sum(diag(noun_tab)) / sum(noun_tab)
+sum(diag(adj_tab)) / sum(adj_tab)
+```
+
+Get the importances:
+
+```{r}
+glas_important <- sort(glasgow_forest$variable.importance, decreasing = TRUE)
+verb_important <- sort(glasgow_verb_forest$variable.importance, decreasing = TRUE)
+noun_important <- sort(glasgow_noun_forest$variable.importance, decreasing = TRUE)
+adj_important <- sort(glasgow_adj_forest$variable.importance, decreasing = TRUE)
+```
+
+Put these into tibbles:
+
+```{r}
+glas_important <- tibble(Phoneme = names(glas_important),
+                         Importance = glas_important) %>% 
+  right_join(select(phones, Phoneme, IPA))
+
+verb_important <- tibble(Phoneme = names(verb_important),
+                         Importance = verb_important) %>% 
+  right_join(select(phones, Phoneme, IPA))
+
+noun_important <- tibble(Phoneme = names(noun_important),
+                         Importance = noun_important) %>% 
+  right_join(select(phones, Phoneme, IPA))
+
+adj_important <- tibble(Phoneme = names(adj_important),
+                         Importance = adj_important) %>% 
+  right_join(select(phones, Phoneme, IPA))
+```
+
+Check them:
+
+```{r}
+glas_important
+verb_important
+noun_important
+adj_important
+```
+
+Make a plot of the most predictive segments for Glasgow norms:
+
+```{r, fig.width = 10, fig.height = 8}
+glas_important_plot <- glas_important %>% 
+  slice_head(n = 10) %>% 
+  ggplot(aes(x = reorder(IPA, Importance), y = Importance)) +
+  geom_point() +
+  ylab('Relative variable importance') +
+  xlab('') + 
+  geom_hline(yintercept = abs(min(glas_important$Importance)), linetype = 2) +
+  geom_hline(yintercept = 0) +
+  coord_flip() +
+  theme_minimal() +
+  theme(axis.title.x = element_text(face = 'bold',
+                                    margin = margin(t = 15, b = 0,
+                                                    r = 0, l = 0)))
+
+# Look:
+
+glas_important_plot
+```
+
+Same for verbs:
+
+```{r, fig.width = 10, fig.height = 8}
+verb_important_plot <- verb_important %>% 
+  slice_head(n = 10) %>% 
+  ggplot(aes(x = reorder(IPA, Importance), y = Importance)) +
+  geom_point() +
+  ylab('Relative variable importance') +
+  xlab('') + 
+  geom_hline(yintercept = abs(min(verb_important$Importance)), linetype = 2) +
+  geom_hline(yintercept = 0) +
+  coord_flip() +
+  theme_minimal() +
+  theme(axis.title.x = element_text(face = 'bold',
+                                    margin = margin(t = 15, b = 0,
+                                                    r = 0, l = 0)))
+
+# Look:
+
+verb_important_plot
+```
+
+Same for nouns:
+
+```{r, fig.width = 10, fig.height = 8}
+noun_important_plot <- noun_important %>% 
+  slice_head(n = 10) %>% 
+  ggplot(aes(x = reorder(IPA, Importance), y = Importance)) +
+  geom_point() +
+  ylab('Relative variable importance') +
+  xlab('') + 
+  geom_hline(yintercept = abs(min(noun_important$Importance)), linetype = 2) +
+  geom_hline(yintercept = 0) +
+  coord_flip() +
+  theme_minimal() +
+  theme(axis.title.x = element_text(face = 'bold',
+                                    margin = margin(t = 15, b = 0,
+                                                    r = 0, l = 0)))
+
+# Look:
+
+noun_important_plot
+```
+
+Same for adjectives:
+
+```{r, fig.width = 10, fig.height = 8}
+adj_important_plot <- adj_important %>% 
+  slice_head(n = 10) %>% 
+  ggplot(aes(x = reorder(IPA, Importance), y = Importance)) +
+  geom_point() +
+  ylab('Relative variable importance') +
+  xlab('') + 
+  geom_hline(yintercept = abs(min(adj_important$Importance)), linetype = 2) +
+  geom_hline(yintercept = 0) +
+  coord_flip() +
+  theme_minimal() +
+  theme(axis.title.x = element_text(face = 'bold',
+                                    margin = margin(t = 15, b = 0,
+                                                    r = 0, l = 0)))
+
+# Look:
+
+adj_important_plot
+```
+
+Check individual patterns, all data:
+
+```{r}
+tab_1 <- with(glasgow, table(SizeCat, R)) # 1st phoneme, r
+tab_2 <- with(glasgow, table(SizeCat, AO)) # 2nd phoneme, O
+tab_3 <- with(glasgow, table(SizeCat, V)) # 2nd phoneme, O
+
+cramersV(tab_1)
+cramersV(tab_2)
+cramersV(tab_3)
+```
+
+Check individual patterns, verb:
+
+```{r}
+tab_1 <- with(glasgow_verb, table(SizeCat, EY)) # 1st phoneme, ei
+tab_2 <- with(glasgow_verb, table(SizeCat, V)) # 2nd phoneme, v
+tab_3 <- with(glasgow_verb, table(SizeCat, S)) # 2nd phoneme, s
+
+cramersV(tab_1)
+cramersV(tab_2)
+cramersV(tab_3)
+```
+
+Check individual patterns, noun:
+
+```{r}
+tab_1 <- with(glasgow_noun, table(SizeCat, AO)) # 1st phoneme, ei
+tab_2 <- with(glasgow_noun, table(SizeCat, JH)) # 2nd phoneme, v
+tab_3 <- with(glasgow_noun, table(SizeCat, R)) # 2nd phoneme, s
+
+cramersV(tab_1)
+cramersV(tab_2)
+cramersV(tab_3)
+```
+
+Check individual patterns, adjectives:
+
+```{r}
+tab_1 <- with(glasgow_adj, table(SizeCat, AH)) # 1st phoneme, V
+tab_2 <- with(glasgow_adj, table(SizeCat, HH)) # 2nd phoneme, h
+tab_3 <- with(glasgow_adj, table(SizeCat, L)) # 2nd phoneme, l
+
+prop.table(tab_1, 1)
+prop.table(tab_2, 1)
+prop.table(tab_3, 1)
+
+cramersV(tab_1)
+cramersV(tab_2)
+cramersV(tab_3)
+```
+
+Check Cohen's d:
+
+```{r}
+cohen.d(Size ~ R, data = glasgow)
+cohen.d(Size ~ AO, data = glasgow)
+cohen.d(Size ~ V, data = glasgow)
+```
+
+## 10th percentile analysis
+
+Get the 10th percentile largest and smallest words from the Glasgow norm dataset to give it a better chance:
+
+```{r}
+glasgow$Size_10 <- as.character(rep(NA, nrow(glasgow)))
+glasgow$Size_20 <- as.character(rep(NA, nrow(glasgow)))
+glasgow <- mutate(glasgow,
+                  Size_10 = ifelse(Size > quantile(Size, 0.9), 'large', Size_10),
+                  Size_10 = ifelse(Size < quantile(Size, 0.10), 'small', Size_10),
+                  Size_20 = ifelse(Size > quantile(Size, 0.8), 'large', Size_20),
+                  Size_20 = ifelse(Size < quantile(Size, 0.20), 'small', Size_20))
+```
+
+Create the task objects for hyperparameter tuning:
+
+```{r}
+glasgow_10 <- bind_cols(select(glasgow, Size_10),
+                        select(glasgow, AA:ZH))
+glasgow_20 <- bind_cols(select(glasgow, Size_20),
+                        select(glasgow, AA:ZH))
+
+# Get rid of the remaining ones (NAs, those that are not within those extreme percentiles):
+
+glasgow_10 <- filter(glasgow_10, !is.na(Size_10))
+glasgow_20 <- filter(glasgow_20, !is.na(Size_20))
+
+# Conver columns:
+
+glasgow_10 <- glasgow_10 %>% mutate_if(is.double, as.factor)
+glasgow_20 <- glasgow_20 %>% mutate_if(is.double, as.factor)
+
+# Make into data frame objects:
+
+glasgow_10 <- as.data.frame(glasgow_10)
+glasgow_20 <- as.data.frame(glasgow_20)
+
+# Make category into factor:
+
+glasgow_10 <- mutate(glasgow_10,
+                     Size_10 = as.factor(Size_10))
+glasgow_20 <- mutate(glasgow_20,
+                     Size_20 = as.factor(Size_20))
+
+# Make into task objects:
+
+glasgow_10_task <- makeClassifTask(data = glasgow_10, target = 'Size_10')
+glasgow_20_task <- makeClassifTask(data = glasgow_20, target = 'Size_20')
+```
+
+Tune these forests:
+
+```{r, warning = FALSE, message = FALSE}
+set.seed(666) # a nice number
+glasgow_10_tunes <- tuneRanger(glasgow_10_task, measure = list(multiclass.brier),
+                               num.trees = 1000, num.threads = 4,
+                               iters = 70, iters.warmup = 30)
+glasgow_20_tunes <- tuneRanger(glasgow_20_task, measure = list(multiclass.brier),
+                               num.trees = 1000, num.threads = 4,
+                               iters = 70, iters.warmup = 30)
+```
+
+Check recommended hyperparameters:
+
+```{r}
+glasgow_10_tunes
+glasgow_20_tunes
+```
+
+Run the forest with those specs:
+
+```{r}
+glas_10_ranger <- ranger(formula = str_c('Size_10 ~ ', all_formula),
+                         probability = FALSE,
+                         data = glasgow_10,
+                         mtry = 4, min.node.size = 2, sample.fraction = 0.4216094,
+                         num.trees = 1000,
+                         seed = 666,
+                         importance = 'permutation')
+glas_20_ranger <- ranger(formula = str_c('Size_20 ~ ', all_formula),
+                         probability = FALSE,
+                         data = glasgow_20,
+                         mtry = 32, min.node.size = 11, sample.fraction = 0.2047053,
+                         num.trees = 1000,
+                         seed = 666,
+                         importance = 'permutation')
+```
+
+Check the forests:
+
+```{r}
+glas_10_ranger
+glas_20_ranger
+```
+
+Get the prediction accuracy. Get predictions:
+
+```{r}
+glas_10_preds <- predict(glas_10_ranger, data = glasgow_10)$predictions
+glas_20_preds <- predict(glas_20_ranger, data = glasgow_20)$predictions
+```
+
+Tables for classification accuracy:
+
+```{r}
+glas_10_tab <- table(glasgow_10$Size_10, glas_10_preds)
+glas_20_tab <- table(glasgow_20$Size_20, glas_20_preds)
+```
+
+Check:
+
+```{r}
+glas_10_tab
+glas_20_tab
+```
+
+Check classification accuracy:
+
+```{r}
+sum(diag(glas_10_tab)) / sum(glas_10_tab)
+sum(diag(glas_20_tab)) / sum(glas_20_tab)
+```
+
+Most predictive phonemes:
+
+```{r}
+sort(glas_10_ranger$variable.importance)
+sort(glas_20_ranger$variable.importance)
+```
+
