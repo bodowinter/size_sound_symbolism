@@ -1,6 +1,6 @@
 ---
 title: "Size Sound Symbolism"
-author: "Bodo Winter"
+author: "Anonymous"
 date: "2/13/2020"
 output: html_document
 ---
